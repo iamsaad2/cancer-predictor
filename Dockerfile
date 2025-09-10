@@ -1,3 +1,26 @@
+############################
+# 1)  Builder  – clone repo
+############################
+FROM alpine/git AS lfsstage
+
+ARG REPO_URL
+ARG REF=main
+ARG GH_TOKEN
+
+RUN apk add --no-cache git-lfs && git lfs install
+
+RUN if [ -z "$GH_TOKEN" ]; then \
+      git clone --depth 1 --branch "$REF" "$REPO_URL" /repo; \
+    else \
+      git clone --depth 1 --branch "$REF" "https://${GH_TOKEN}@${REPO_URL#https://}" /repo; \
+    fi && \
+    cd /repo && \
+    git lfs pull --include="models/*.RData" && \
+    ls -lh /repo/models    
+
+############################
+# 2)  Runtime image
+############################
 FROM rocker/r-ver:4.3.3
 
 RUN apt-get update && \
@@ -10,7 +33,9 @@ RUN install2.r --error plumber caret dplyr pROC ranger jsonlite
 WORKDIR /app
 
 COPY cancer_api.R /app/
-COPY models/ /app/models/
+
+# copy the real model files
+COPY --from=lfsstage /repo/models /app/models
 
 EXPOSE 8000
 CMD ["R", "-e", "pr <- plumber::plumb('cancer_api.R'); pr$run(host='0.0.0.0', port=8000)"]
