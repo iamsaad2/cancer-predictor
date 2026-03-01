@@ -32,9 +32,11 @@ RUN install2.r --error plumber caret dplyr pROC ranger jsonlite
 
 WORKDIR /app
 
+# Copy both API and predict_once script
 COPY cancer_api.R /app/
+COPY predict_once_meta.R /app/
 
-# copy the real model files
+# Copy the real model files
 COPY --from=lfsstage /repo/models /app/models
 
 EXPOSE 8000
