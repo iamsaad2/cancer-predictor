@@ -166,23 +166,14 @@ inp <- fromJSON(input_file)
 model_file <- file.path(model_dir, paste0(cancer_type, ".RData"))
 if (!file.exists(model_file)) stop(paste("Model not found:", model_file))
 
-# Build patient data once (tiny, stays in memory)
+# Build patient data
 patient_data <- create_patient_data(cancer_type, inp)
 
-# ── Step 1: Load logistic model, predict, then free it ──
+# Load only the random forest (tree) model
 model_env <- new.env()
 load(model_file, envir = model_env)
-logistic_model <- model_env$logistic_model
+tree_model <- model_env$tree_model
 rm(model_env); gc()
-
-logistic_pred <- predict(logistic_model, patient_data, type = "prob")
-rm(logistic_model); gc()
-
-# ── Step 2: Load tree model, predict, then free it ──
-model_env2 <- new.env()
-load(model_file, envir = model_env2)
-tree_model <- model_env2$tree_model
-rm(model_env2); gc()
 
 tree_pred <- predict(tree_model, patient_data, type = "prob")
 rm(tree_model); gc()
@@ -192,11 +183,6 @@ result <- list(
   cancer_type = cancer_type,
   patient_data = inp,
   predictions = list(
-    logistic_regression = list(
-      no_metastasis = round(logistic_pred$No, 4),
-      metastasis    = round(logistic_pred$Yes, 4),
-      risk_level    = ifelse(logistic_pred$Yes > 0.5, "HIGH", "LOW")
-    ),
     random_forest = list(
       no_metastasis = round(tree_pred$No, 4),
       metastasis    = round(tree_pred$Yes, 4),
