@@ -163,17 +163,24 @@ create_patient_data <- function(cancer_type, d) {
 
 inp <- fromJSON(input_file)
 
-model_file <- file.path(model_dir, paste0(cancer_type, ".RData"))
-if (!file.exists(model_file)) stop(paste("Model not found:", model_file))
-
 # Build patient data
 patient_data <- create_patient_data(cancer_type, inp)
 
-# Load only the random forest (tree) model
-model_env <- new.env()
-load(model_file, envir = model_env)
-tree_model <- model_env$tree_model
-rm(model_env); gc()
+# Check if individual .rds file exists (for large models split into separate files)
+rds_file <- file.path(model_dir, paste0(cancer_type, "_tree.rds"))
+
+if (file.exists(rds_file)) {
+  # Load from individual .rds (much less memory — only loads the one model)
+  tree_model <- readRDS(rds_file)
+} else {
+  # Fall back to .RData
+  model_file <- file.path(model_dir, paste0(cancer_type, ".RData"))
+  if (!file.exists(model_file)) stop(paste("Model not found:", model_file))
+  model_env <- new.env()
+  load(model_file, envir = model_env)
+  tree_model <- model_env$tree_model
+  rm(model_env); gc()
+}
 
 tree_pred <- predict(tree_model, patient_data, type = "prob")
 rm(tree_model); gc()
