@@ -163,22 +163,29 @@ create_patient_data <- function(cancer_type, d) {
 
 inp <- fromJSON(input_file)
 
-# Load model
 model_file <- file.path(model_dir, paste0(cancer_type, ".RData"))
 if (!file.exists(model_file)) stop(paste("Model not found:", model_file))
 
-model_env <- new.env()
-load(model_file, envir = model_env)
-
-logistic_model <- model_env$logistic_model
-tree_model     <- model_env$tree_model
-
-# Build patient data
+# Build patient data once (tiny, stays in memory)
 patient_data <- create_patient_data(cancer_type, inp)
 
-# Predict
+# ── Step 1: Load logistic model, predict, then free it ──
+model_env <- new.env()
+load(model_file, envir = model_env)
+logistic_model <- model_env$logistic_model
+rm(model_env); gc()
+
 logistic_pred <- predict(logistic_model, patient_data, type = "prob")
-tree_pred     <- predict(tree_model, patient_data, type = "prob")
+rm(logistic_model); gc()
+
+# ── Step 2: Load tree model, predict, then free it ──
+model_env2 <- new.env()
+load(model_file, envir = model_env2)
+tree_model <- model_env2$tree_model
+rm(model_env2); gc()
+
+tree_pred <- predict(tree_model, patient_data, type = "prob")
+rm(tree_model); gc()
 
 # Build result
 result <- list(
