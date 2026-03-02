@@ -1,10 +1,11 @@
 # predict_once_meta.R
 # Standalone script: load model, predict, write result, exit (frees RAM)
+# Aim 1 only: any metastasis prediction
 library(jsonlite)
 library(caret)
 library(ranger)
 
-# Helper: read args
+# ── Args ──────────────────────────────────────────────────────────────────
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) != 3) stop("Usage: Rscript predict_once_meta.R <cancer_type> <input.json> <output.json>")
 
@@ -14,16 +15,16 @@ output_file <- args[3]
 
 model_dir <- Sys.getenv("MODEL_DIR", unset = "/app/models")
 
-# Helper: convert sex
+# ── Helpers ───────────────────────────────────────────────────────────────
 convert_sex <- function(s) {
   if (s == "male") return("1")
   if (s == "female") return("2")
   return(s)
 }
 
-# Build patient data frame based on cancer type
+# ── Patient data builder ─────────────────────────────────────────────────
 create_patient_data <- function(cancer_type, d) {
-
+  
   if (cancer_type == "breast") {
     return(data.frame(
       AGE            = as.numeric(d$age),
@@ -35,7 +36,7 @@ create_patient_data <- function(cancer_type, d) {
       breast_br_cat  = factor(d$grade, levels = c("Grade 1","Grade 2","Grade 3","Grade 4"))
     ))
   }
-
+  
   if (cancer_type == "prostate") {
     return(data.frame(
       AGE            = as.numeric(d$age),
@@ -46,7 +47,7 @@ create_patient_data <- function(cancer_type, d) {
       prostate_gs_cat= factor(d$gleason, levels = c("Grade group 1","Grade group 2","Grade group 3","Grade group 4","Grade group 5"))
     ))
   }
-
+  
   if (cancer_type == "colon") {
     return(data.frame(
       AGE       = as.numeric(d$age),
@@ -56,7 +57,7 @@ create_patient_data <- function(cancer_type, d) {
       colon_cea = as.numeric(d$cea)
     ))
   }
-
+  
   if (cancer_type == "rectum") {
     return(data.frame(
       AGE            = as.numeric(d$age),
@@ -66,7 +67,7 @@ create_patient_data <- function(cancer_type, d) {
       rectum_cea_cat = factor(d$cea_status, levels = c("Negative/normal; within normal limits","Positive/elevated"))
     ))
   }
-
+  
   if (cancer_type == "urine") {
     return(data.frame(
       AGE       = as.numeric(d$age),
@@ -75,7 +76,7 @@ create_patient_data <- function(cancer_type, d) {
       TNM_T_cat = factor(d$tnm_t, levels = c("T0","T1","T2","T3","T4"))
     ))
   }
-
+  
   if (cancer_type == "esophagu") {
     return(data.frame(
       AGE       = as.numeric(d$age),
@@ -84,7 +85,7 @@ create_patient_data <- function(cancer_type, d) {
       TNM_T_cat = factor(d$tnm_t, levels = c("T0","T1","T2","T3","T4"))
     ))
   }
-
+  
   if (cancer_type == "melanoma") {
     return(data.frame(
       AGE       = as.numeric(d$age),
@@ -93,7 +94,7 @@ create_patient_data <- function(cancer_type, d) {
       TNM_T_cat = factor(d$tnm_t, levels = c("T0","T1","T2","T3","T4"))
     ))
   }
-
+  
   if (cancer_type == "liver") {
     return(data.frame(
       AGE           = as.numeric(d$age),
@@ -104,7 +105,7 @@ create_patient_data <- function(cancer_type, d) {
       liver_fs_cat  = factor(d$fibrosis_score, levels = c("Fibrosis score 0-4","Fibrosis score 5-6"))
     ))
   }
-
+  
   if (cancer_type == "kidney") {
     return(data.frame(
       AGE        = as.numeric(d$age),
@@ -115,7 +116,7 @@ create_patient_data <- function(cancer_type, d) {
       rcc_fng_cat= factor(d$fuhrman_grade, levels = c("1","2","3","4"))
     ))
   }
-
+  
   if (cancer_type == "ovary") {
     return(data.frame(
       AGE             = as.numeric(d$age),
@@ -124,7 +125,7 @@ create_patient_data <- function(cancer_type, d) {
       ovary_ca125_cat = factor(d$ca125_status, levels = c("Negative/normal; within normal limits","Positive/elevated"))
     ))
   }
-
+  
   if (cancer_type == "retroper") {
     return(data.frame(
       AGE            = as.numeric(d$age),
@@ -134,7 +135,7 @@ create_patient_data <- function(cancer_type, d) {
       retroper_sg_cat= factor(d$surgical_grade, levels = c("1","2","3"))
     ))
   }
-
+  
   if (cancer_type == "testis") {
     return(data.frame(
       AGE            = as.numeric(d$age),
@@ -145,7 +146,7 @@ create_patient_data <- function(cancer_type, d) {
       testis_ldh_cat = factor(d$ldh_status, levels = c("Within normal limits","Elevated"))
     ))
   }
-
+  
   if (cancer_type %in% c("LNSC","LSC")) {
     return(data.frame(
       AGE       = as.numeric(d$age),
@@ -154,7 +155,7 @@ create_patient_data <- function(cancer_type, d) {
       TNM_T_cat = factor(d$tnm_t, levels = c("T0","T1","T2","T3","T4"))
     ))
   }
-
+  
   stop(paste("Unsupported cancer type:", cancer_type))
 }
 

@@ -95,7 +95,7 @@ function(cancer_type) {
                   LNSC = , LSC = list(
                     sex = "Sex (male, female)"
                   ),
-                  list(sex = "Sex (male, female)")  # default fallback
+                  list(sex = "Sex (male, female)")
   )
   
   return(c(base_inputs, extra))
@@ -127,7 +127,7 @@ function(req, res, cancer_type) {
     "Rscript",
     args = c("/app/predict_once_meta.R", cancer_type, input_file, output_file),
     wait    = TRUE,
-    timeout = 120  # 2 minute max
+    timeout = 300
   )
   
   if (status != 0 || !file.exists(output_file)) {
@@ -161,7 +161,7 @@ function(cancer_type) {
                     breast = list(age=55, tnm_n="N1", tnm_t="T2", er_status="Yes", pr_status="Yes", her2_status="No", grade="Grade 2"),
                     kidney = list(age=56, sex="male", tnm_n="N0", tnm_t="T1", surgical_factors="Yes", fuhrman_grade="2"),
                     LNSC   = list(age=65, sex="male", tnm_n="N1", tnm_t="T2"),
-                    list(age=60, sex="male", tnm_n="N1", tnm_t="T2")  # default
+                    list(age=60, sex="male", tnm_n="N1", tnm_t="T2")
   )
   
   return(list(example_request = example))
