@@ -15,8 +15,8 @@ RUN if [ -z "$GH_TOKEN" ]; then \
       git clone --depth 1 --branch "$REF" "https://${GH_TOKEN}@${REPO_URL#https://}" /repo; \
     fi && \
     cd /repo && \
-    git lfs pull --include="models/*.RData" && \
-    ls -lh /repo/models    
+    git lfs pull --include="models/*_tree.rds" && \
+    ls -lh /repo/models
 
 ############################
 # 2)  Runtime image
@@ -37,7 +37,7 @@ COPY cancer_api.R /app/
 COPY predict_once_meta.R /app/
 
 # Copy model files from LFS stage
-COPY --from=lfsstage /repo/models /app/models
+COPY --from=lfsstage /repo/models/*_tree.rds /app/models/
 
 EXPOSE 8000
 CMD ["R", "-e", "pr <- plumber::plumb('cancer_api.R'); pr$run(host='0.0.0.0', port=8000)"]
