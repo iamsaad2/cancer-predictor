@@ -7,37 +7,28 @@ ARG REPO_URL
 ARG REF=main
 ARG GH_TOKEN
 
-RUN apk add --no-cache git-lfs && git lfs install
+# Lookup CSVs are not LFS-tracked, so we don't need git-lfs.
+# Skip smudge so LFS pointer files for legacy model artifacts stay as stubs.
+ENV GIT_LFS_SKIP_SMUDGE=1
 
 RUN if [ -z "$GH_TOKEN" ]; then \
       git clone --depth 1 --branch "$REF" "$REPO_URL" /repo; \
     else \
       git clone --depth 1 --branch "$REF" "https://${GH_TOKEN}@${REPO_URL#https://}" /repo; \
     fi && \
-    cd /repo && \
-    git lfs pull --include="models/*_tree.rds" && \
-    ls -lh /repo/models
+    ls -lh /repo/lookup_tables
 
 ############################
 # 2)  Runtime image
 ############################
 FROM rocker/r-ver:4.3.3
 
-RUN apt-get update && \
-    apt-get install -y libgoogle-perftools4 && \
-    rm -rf /var/lib/apt/lists/*
-ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4
-
-RUN install2.r --error plumber caret dplyr pROC ranger jsonlite
+RUN install2.r --error plumber jsonlite
 
 WORKDIR /app
 
-# Copy API and predict_once script
 COPY cancer_api.R /app/
-COPY predict_once_meta.R /app/
-
-# Copy model files from LFS stage
-COPY --from=lfsstage /repo/models/*_tree.rds /app/models/
+COPY --from=lfsstage /repo/lookup_tables /app/lookup_tables
 
 EXPOSE 8000
 CMD ["R", "-e", "pr <- plumber::plumb('cancer_api.R'); pr$run(host='0.0.0.0', port=8000)"]
