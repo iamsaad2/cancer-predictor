@@ -29,6 +29,7 @@ WORKDIR /app
 
 COPY cancer_api.R /app/
 COPY --from=lfsstage /repo/lookup_tables /app/lookup_tables
+COPY --from=lfsstage /repo/lookup_tables_aim2 /app/lookup_tables_aim2
 
 EXPOSE 8000
 CMD ["R", "-e", "pr <- plumber::plumb('cancer_api.R'); pr$run(host='0.0.0.0', port=8000)"]

@@ -24,6 +24,10 @@ PSA_BUCKETS   <- c(2, 7, 15, 35, 75, 150)
 CORES_BUCKETS <- c(0.1, 0.3, 0.5, 0.7, 0.9)
 CEA_BUCKETS   <- c(1, 3.75, 7.5, 15, 35, 100)
 
+# Aim 2 — age is bucketed (must match build_lookup_aim2.R)
+AGE_BUCKETS <- seq(5, 95, by = 10)
+AIM2_SITES  <- c("bone", "brain", "liver", "lung")
+
 # Per-cancer mapping: API field → (CSV column, value type)
 # Types: "exact_str", "sex", "age", "psa", "cores", "cea"
 INPUT_MAPS <- list(
@@ -141,10 +145,11 @@ transform_value <- function(value, type) {
   }
   v <- suppressWarnings(as.numeric(value))
   if (is.na(v)) stop(sprintf("Expected number, got: '%s'", value))
-  if (type == "age")   return(min(max(as.integer(round(v)), 0), 99))
-  if (type == "psa")   return(nearest_bucket(v, PSA_BUCKETS))
-  if (type == "cores") return(nearest_bucket(v, CORES_BUCKETS))
-  if (type == "cea")   return(nearest_bucket(v, CEA_BUCKETS))
+  if (type == "age")        return(min(max(as.integer(round(v)), 0), 99))
+  if (type == "age_bucket") return(nearest_bucket(min(max(as.integer(round(v)), 0), 99), AGE_BUCKETS))
+  if (type == "psa")        return(nearest_bucket(v, PSA_BUCKETS))
+  if (type == "cores")      return(nearest_bucket(v, CORES_BUCKETS))
+  if (type == "cea")        return(nearest_bucket(v, CEA_BUCKETS))
   stop(sprintf("Unknown input type: %s", type))
 }
 
@@ -207,6 +212,96 @@ lookup_predict <- function(cancer, inp) {
   filtered[1, ]
 }
 
+# ── Aim 2 — site-specific metastasis prediction ──────────────────────────
+# Reuses Aim 1's per-cancer covariate maps but bucketing AGE, and adds mets_* fields per site.
+
+AIM2_INPUT_MAPS <- lapply(INPUT_MAPS, function(m) {
+  if (!is.null(m$age)) m$age$type <- "age_bucket"
+  m
+})
+
+aim2_key <- function(cancer) tolower(cancer)  # CSVs use lowercase (lnsc, lsc)
+
+AIM2_LOOKUPS <- new.env()
+
+prepare_aim2_df <- function(df, cancer) {
+  map <- AIM2_INPUT_MAPS[[cancer]]
+  for (field in names(map)) {
+    m <- map[[field]]
+    if (m$type %in% c("age_bucket","psa","cores","cea")) {
+      df[[m$col]] <- as.numeric(df[[m$col]])
+    } else {
+      df[[m$col]] <- as.character(df[[m$col]])
+    }
+  }
+  for (col in c("mets_bone","mets_brain","mets_liver","mets_lung","mate_other")) {
+    if (col %in% names(df)) df[[col]] <- as.character(df[[col]])
+  }
+  df$p_mets <- as.numeric(df$p_mets)
+  df
+}
+
+aim2_lookup_dir <- Sys.getenv("AIM2_LOOKUP_DIR", unset = "/app/lookup_tables_aim2")
+cat(sprintf("Loading Aim 2 lookup tables from %s\n", aim2_lookup_dir))
+for (cancer in CANCER_TYPES) {
+  for (site in AIM2_SITES) {
+    key <- paste0(aim2_key(cancer), "_", site)
+    f   <- file.path(aim2_lookup_dir, paste0(key, "_lookup.csv.gz"))
+    if (!file.exists(f)) {
+      cat(sprintf("  WARN: missing %s\n", f))
+      next
+    }
+    df <- read.csv(gzfile(f), colClasses = "character", stringsAsFactors = FALSE)
+    AIM2_LOOKUPS[[key]] <- prepare_aim2_df(df, cancer)
+  }
+}
+cat(sprintf("  loaded %d Aim 2 tables\n", length(ls(AIM2_LOOKUPS))))
+
+# Predict probability of mets to a single target site.
+predict_sites_one <- function(cancer, site, inp) {
+  key <- paste0(aim2_key(cancer), "_", site)
+  df  <- AIM2_LOOKUPS[[key]]
+  if (is.null(df)) stop(sprintf("No Aim 2 lookup table for %s/%s", cancer, site))
+  map <- AIM2_INPUT_MAPS[[cancer]]
+
+  filtered <- df
+  # Aim 1 covariates (age bucketed)
+  for (field in names(map)) {
+    raw <- inp[[field]]
+    if (is.null(raw) || (is.character(raw) && nchar(raw) == 0)) {
+      stop(sprintf("Missing required field: %s", field))
+    }
+    m   <- map[[field]]
+    val <- transform_value(raw, m$type)
+    filtered <- filtered[filtered[[m$col]] == val, , drop = FALSE]
+    if (nrow(filtered) == 0) {
+      stop(sprintf("Invalid %s='%s' (mapped to '%s') for %s/%s", field, raw, val, cancer, site))
+    }
+  }
+
+  # mets_<other 3 sites>
+  for (s in setdiff(AIM2_SITES, site)) {
+    col <- paste0("mets_", s)
+    raw <- inp[[col]]
+    if (is.null(raw)) stop(sprintf("Missing required field: %s", col))
+    val <- as.character(raw)
+    if (!val %in% c("Yes","No")) stop(sprintf("%s must be 'Yes' or 'No', got '%s'", col, raw))
+    filtered <- filtered[filtered[[col]] == val, , drop = FALSE]
+  }
+
+  # mets_other (CSV column is "mate_other" — typo carried from model)
+  raw <- inp$mets_other
+  if (is.null(raw)) stop("Missing required field: mets_other")
+  val <- as.character(raw)
+  if (!val %in% c("Yes","No")) stop(sprintf("mets_other must be 'Yes' or 'No', got '%s'", raw))
+  filtered <- filtered[filtered$mate_other == val, , drop = FALSE]
+
+  if (nrow(filtered) != 1) {
+    stop(sprintf("Internal: expected 1 row for %s/%s, got %d", cancer, site, nrow(filtered)))
+  }
+  filtered$p_mets[1]
+}
+
 #* @apiTitle Cancer Metastasis Prediction API (lookup-table backed)
 
 #* @get /cancer-types
@@ -219,7 +314,8 @@ function() list(
   status = "healthy",
   timestamp = Sys.time(),
   available_cancer_types = length(CANCER_TYPES),
-  loaded_tables = length(ls(LOOKUPS))
+  loaded_aim1_tables = length(ls(LOOKUPS)),
+  loaded_aim2_tables = length(ls(AIM2_LOOKUPS))
 )
 
 #* @get /inputs/<cancer_type>
@@ -286,6 +382,40 @@ function(req, res, cancer_type) {
       )
     ),
     timestamp = format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
+  )
+}
+
+#* @post /predict-sites/<cancer_type>
+#* @serializer unboxedJSON
+function(req, res, cancer_type) {
+  if (!cancer_type %in% CANCER_TYPES) {
+    res$status <- 400
+    return(list(error = "Invalid cancer type"))
+  }
+  inp <- tryCatch(jsonlite::fromJSON(req$postBody), error = function(e) NULL)
+  if (is.null(inp)) {
+    res$status <- 400
+    return(list(error = "Invalid JSON body"))
+  }
+
+  predictions <- list()
+  for (site in AIM2_SITES) {
+    p <- tryCatch(predict_sites_one(cancer_type, site, inp), error = function(e) e)
+    if (inherits(p, "error")) {
+      res$status <- 400
+      return(list(error = conditionMessage(p)))
+    }
+    predictions[[site]] <- list(
+      p_mets     = round(p, 4),
+      risk_level = ifelse(p > 0.5, "HIGH", "LOW")
+    )
+  }
+
+  list(
+    cancer_type  = cancer_type,
+    patient_data = inp,
+    predictions  = predictions,
+    timestamp    = format(Sys.time(), "%Y-%m-%dT%H:%M:%S")
   )
 }
 
