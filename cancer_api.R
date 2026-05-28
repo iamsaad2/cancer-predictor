@@ -163,12 +163,13 @@ prepare_df <- function(df, cancer) {
     if (m$type %in% c("age","psa","cores","cea")) {
       df[[m$col]] <- as.numeric(df[[m$col]])
     } else {
-      df[[m$col]] <- as.character(df[[m$col]])
+      # factor stores low-cardinality strings as 4-byte int codes — saves RAM
+      df[[m$col]] <- as.factor(df[[m$col]])
     }
   }
   df$no_metastasis <- as.numeric(df$no_metastasis)
   df$metastasis    <- as.numeric(df$metastasis)
-  df$risk_level    <- as.character(df$risk_level)
+  df$risk_level    <- as.factor(df$risk_level)
   df
 }
 
@@ -231,11 +232,11 @@ prepare_aim2_df <- function(df, cancer) {
     if (m$type %in% c("age_bucket","psa","cores","cea")) {
       df[[m$col]] <- as.numeric(df[[m$col]])
     } else {
-      df[[m$col]] <- as.character(df[[m$col]])
+      df[[m$col]] <- as.factor(df[[m$col]])
     }
   }
   for (col in c("mets_bone","mets_brain","mets_liver","mets_lung","mate_other")) {
-    if (col %in% names(df)) df[[col]] <- as.character(df[[col]])
+    if (col %in% names(df)) df[[col]] <- as.factor(df[[col]])
   }
   df$p_mets <- as.numeric(df$p_mets)
   df
