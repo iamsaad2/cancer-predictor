@@ -1,2 +1,9 @@
 models/*.RData
+models/*.rds
 aim2_models/
+
+# Built at Docker-build time from the committed lookup CSVs — never commit it.
+lookups.db
+*.db
+
+.DS_Store

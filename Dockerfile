@@ -23,13 +23,21 @@ RUN if [ -z "$GH_TOKEN" ]; then \
 ############################
 FROM rocker/r-ver:4.3.3
 
-RUN install2.r --error plumber jsonlite
+RUN install2.r --error plumber jsonlite DBI RSQLite
 
 WORKDIR /app
 
-COPY cancer_api.R /app/
+COPY cancer_api.R build_sqlite.R /app/
 COPY --from=lfsstage /repo/lookup_tables /app/lookup_tables
 COPY --from=lfsstage /repo/lookup_tables_aim2 /app/lookup_tables_aim2
+
+# Bake the compressed lookup CSVs into a single indexed SQLite DB, then drop the
+# CSVs. At runtime the API queries the DB per-request, so RAM stays small and
+# constant regardless of how many lookup tables exist.
+RUN Rscript build_sqlite.R /app/lookups.db && \
+    rm -rf /app/lookup_tables /app/lookup_tables_aim2
+
+ENV LOOKUP_DB=/app/lookups.db
 
 EXPOSE 8000
 CMD ["R", "-e", "pr <- plumber::plumb('cancer_api.R'); pr$run(host='0.0.0.0', port=8000)"]

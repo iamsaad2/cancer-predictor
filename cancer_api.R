@@ -1,6 +1,11 @@
-# cancer_api.R — CSV-lookup backed API
+# cancer_api.R — SQLite-lookup backed API
+# Predictions are precomputed lookup grids stored in an indexed SQLite database
+# (lookups.db, built by build_sqlite.R). Each request is a single-row keyed
+# lookup, so the process holds almost no data in RAM regardless of table count.
 library(plumber)
 library(jsonlite)
+library(DBI)
+library(RSQLite)
 
 #* @filter cors
 cors <- function(req, res) {
@@ -16,7 +21,8 @@ cors <- function(req, res) {
 
 CANCER_TYPES <- c(
   "breast","prostate","colon","rectum","urine","esophagu",
-  "melanoma","liver","kidney","ovary","retroper","testis","LNSC","LSC"
+  "melanoma","liver","kidney","ovary","retroper","testis","LNSC","LSC",
+  "uterine","thyroid","pancreas","stomach","cervix"
 )
 
 # Clinical bucket midpoints for numeric inputs (must match build_lookup.R)
@@ -128,6 +134,35 @@ INPUT_MAPS <- list(
     sex=list(col="SEX",type="sex"),
     tnm_n=list(col="TNM_N_cat",type="exact_str"),
     tnm_t=list(col="TNM_T_cat",type="exact_str")
+  ),
+  uterine = list(
+    age=list(col="AGE",type="age"),
+    tnm_n=list(col="TNM_N_cat",type="exact_str"),
+    tnm_t=list(col="TNM_T_cat",type="exact_str")
+  ),
+  thyroid = list(
+    age=list(col="AGE",type="age"),
+    sex=list(col="SEX",type="sex"),
+    tnm_n=list(col="TNM_N_cat",type="exact_str"),
+    tnm_t=list(col="TNM_T_cat",type="exact_str"),
+    focality=list(col="thyroid_cat",type="exact_str")   # Aim 1 only; dropped in Aim 2
+  ),
+  pancreas = list(
+    age=list(col="AGE",type="age"),
+    sex=list(col="SEX",type="sex"),
+    tnm_n=list(col="TNM_N_cat",type="exact_str"),
+    tnm_t=list(col="TNM_T_cat",type="exact_str")
+  ),
+  stomach = list(
+    age=list(col="AGE",type="age"),
+    sex=list(col="SEX",type="sex"),
+    tnm_n=list(col="TNM_N_cat",type="exact_str"),
+    tnm_t=list(col="TNM_T_cat",type="exact_str")
+  ),
+  cervix = list(
+    age=list(col="AGE",type="age"),
+    tnm_n=list(col="TNM_N_cat",type="exact_str"),
+    tnm_t=list(col="TNM_T_cat",type="exact_str")
   )
 )
 
@@ -153,64 +188,63 @@ transform_value <- function(value, type) {
   stop(sprintf("Unknown input type: %s", type))
 }
 
-# Load CSVs once at startup. Keep numeric columns numeric so == compares cleanly.
-LOOKUPS <- new.env()
+# ── SQLite lookup store ──────────────────────────────────────────────────
+# One read-only connection; every prediction is a single keyed row lookup.
+# Nothing is held in RAM beyond SQLite's small page cache.
+db_path <- Sys.getenv("LOOKUP_DB", unset = "/app/lookups.db")
+cat(sprintf("Opening lookup DB %s\n", db_path))
+DB        <- dbConnect(RSQLite::SQLite(), dbname = db_path, flags = RSQLite::SQLITE_RO)
+DB_TABLES <- dbListTables(DB)
+cat(sprintf("  %d lookup tables available\n", length(DB_TABLES)))
 
-prepare_df <- function(df, cancer) {
-  map <- INPUT_MAPS[[cancer]]
-  for (field in names(map)) {
-    m <- map[[field]]
-    if (m$type %in% c("age","psa","cores","cea")) {
-      df[[m$col]] <- as.numeric(df[[m$col]])
-    } else {
-      # factor stores low-cardinality strings as 4-byte int codes — saves RAM
-      df[[m$col]] <- as.factor(df[[m$col]])
-    }
-  }
-  df$no_metastasis <- as.numeric(df$no_metastasis)
-  df$metastasis    <- as.numeric(df$metastasis)
-  df$risk_level    <- as.factor(df$risk_level)
-  df
+# Fetch the row(s) matching the given column = value pairs (all TEXT).
+db_lookup <- function(tbl, cols, vals, select = "*") {
+  where <- paste(sprintf('"%s" = ?', cols), collapse = " AND ")
+  sql   <- sprintf('SELECT %s FROM "%s" WHERE %s', select, tbl, where)
+  dbGetQuery(DB, sql, params = as.list(as.character(vals)))
 }
 
-lookup_dir <- Sys.getenv("LOOKUP_DIR", unset = "/app/lookup_tables")
-cat(sprintf("Loading lookup tables from %s\n", lookup_dir))
-for (cancer in CANCER_TYPES) {
-  f <- file.path(lookup_dir, paste0(cancer, "_lookup.csv"))
-  if (!file.exists(f)) {
-    cat(sprintf("  WARN: missing %s\n", f))
-    next
-  }
-  df <- read.csv(f, colClasses = "character", stringsAsFactors = FALSE)
-  LOOKUPS[[cancer]] <- prepare_df(df, cancer)
-  cat(sprintf("  loaded %s (%d rows)\n", cancer, nrow(LOOKUPS[[cancer]])))
+# On a failed lookup, return the allowed values for a column if `val` isn't one
+# of them (used to build a helpful error), else NULL.
+db_offending <- function(tbl, col, val) {
+  allowed <- dbGetQuery(DB, sprintf('SELECT DISTINCT "%s" AS v FROM "%s"', col, tbl))$v
+  if (as.character(val) %in% allowed) NULL else sort(allowed)
 }
 
 lookup_predict <- function(cancer, inp) {
-  df  <- LOOKUPS[[cancer]]
-  if (is.null(df)) stop(sprintf("No lookup table loaded for cancer: %s", cancer))
+  tbl <- paste0("aim1_", tolower(cancer))
+  if (!tbl %in% DB_TABLES) stop(sprintf("No lookup table for cancer: %s", cancer))
   map <- INPUT_MAPS[[cancer]]
 
-  filtered <- df
+  cols <- character(0); vals <- character(0); fields <- character(0)
   for (field in names(map)) {
     raw <- inp[[field]]
     if (is.null(raw) || (is.character(raw) && nchar(raw) == 0)) {
       stop(sprintf("Missing required field: %s", field))
     }
-    m   <- map[[field]]
-    val <- transform_value(raw, m$type)
-    filtered <- filtered[filtered[[m$col]] == val, , drop = FALSE]
-    if (nrow(filtered) == 0) {
-      allowed <- sort(unique(df[[m$col]]))
-      stop(sprintf("Invalid %s='%s' (mapped to '%s'). Expected one of: %s",
-                   field, raw, val, paste(allowed, collapse = ", ")))
-    }
+    m      <- map[[field]]
+    cols   <- c(cols, m$col)
+    vals   <- c(vals, as.character(transform_value(raw, m$type)))
+    fields <- c(fields, field)
   }
 
-  if (nrow(filtered) != 1) {
-    stop(sprintf("Internal: expected 1 matching row, got %d", nrow(filtered)))
+  row <- db_lookup(tbl, cols, vals, select = "no_metastasis, metastasis, risk_level")
+  if (nrow(row) == 0) {
+    for (i in seq_along(cols)) {
+      allowed <- db_offending(tbl, cols[i], vals[i])
+      if (!is.null(allowed)) {
+        stop(sprintf("Invalid %s='%s' (mapped to '%s'). Expected one of: %s",
+                     fields[i], inp[[fields[i]]], vals[i], paste(allowed, collapse = ", ")))
+      }
+    }
+    stop("No matching row for the given inputs")
   }
-  filtered[1, ]
+  if (nrow(row) != 1) stop(sprintf("Internal: expected 1 matching row, got %d", nrow(row)))
+  list(
+    no_metastasis = as.numeric(row$no_metastasis[1]),
+    metastasis    = as.numeric(row$metastasis[1]),
+    risk_level    = row$risk_level[1]
+  )
 }
 
 # ── Aim 2 — site-specific metastasis prediction ──────────────────────────
@@ -220,64 +254,25 @@ AIM2_INPUT_MAPS <- lapply(INPUT_MAPS, function(m) {
   if (!is.null(m$age)) m$age$type <- "age_bucket"
   m
 })
+# Aim 2 thyroid model does not use tumor focality (that covariate is Aim 1 only).
+AIM2_INPUT_MAPS$thyroid$focality <- NULL
 
-aim2_key <- function(cancer) tolower(cancer)  # CSVs use lowercase (lnsc, lsc)
-
-AIM2_LOOKUPS <- new.env()
-
-prepare_aim2_df <- function(df, cancer) {
-  map <- AIM2_INPUT_MAPS[[cancer]]
-  for (field in names(map)) {
-    m <- map[[field]]
-    if (m$type %in% c("age_bucket","psa","cores","cea")) {
-      df[[m$col]] <- as.numeric(df[[m$col]])
-    } else {
-      df[[m$col]] <- as.factor(df[[m$col]])
-    }
-  }
-  for (col in c("mets_bone","mets_brain","mets_liver","mets_lung","mate_other")) {
-    if (col %in% names(df)) df[[col]] <- as.factor(df[[col]])
-  }
-  df$p_mets <- as.numeric(df$p_mets)
-  df
-}
-
-aim2_lookup_dir <- Sys.getenv("AIM2_LOOKUP_DIR", unset = "/app/lookup_tables_aim2")
-cat(sprintf("Loading Aim 2 lookup tables from %s\n", aim2_lookup_dir))
-for (cancer in CANCER_TYPES) {
-  for (site in AIM2_SITES) {
-    key <- paste0(aim2_key(cancer), "_", site)
-    f   <- file.path(aim2_lookup_dir, paste0(key, "_lookup.csv.gz"))
-    if (!file.exists(f)) {
-      cat(sprintf("  WARN: missing %s\n", f))
-      next
-    }
-    df <- read.csv(gzfile(f), colClasses = "character", stringsAsFactors = FALSE)
-    AIM2_LOOKUPS[[key]] <- prepare_aim2_df(df, cancer)
-  }
-}
-cat(sprintf("  loaded %d Aim 2 tables\n", length(ls(AIM2_LOOKUPS))))
-
-# Predict probability of mets to a single target site.
+# Predict probability of mets to a single target site (queries the SQLite store).
 predict_sites_one <- function(cancer, site, inp) {
-  key <- paste0(aim2_key(cancer), "_", site)
-  df  <- AIM2_LOOKUPS[[key]]
-  if (is.null(df)) stop(sprintf("No Aim 2 lookup table for %s/%s", cancer, site))
+  tbl <- paste0("aim2_", tolower(cancer), "_", site)
+  if (!tbl %in% DB_TABLES) stop(sprintf("No Aim 2 lookup table for %s/%s", cancer, site))
   map <- AIM2_INPUT_MAPS[[cancer]]
 
-  filtered <- df
+  cols <- character(0); vals <- character(0)
   # Aim 1 covariates (age bucketed)
   for (field in names(map)) {
     raw <- inp[[field]]
     if (is.null(raw) || (is.character(raw) && nchar(raw) == 0)) {
       stop(sprintf("Missing required field: %s", field))
     }
-    m   <- map[[field]]
-    val <- transform_value(raw, m$type)
-    filtered <- filtered[filtered[[m$col]] == val, , drop = FALSE]
-    if (nrow(filtered) == 0) {
-      stop(sprintf("Invalid %s='%s' (mapped to '%s') for %s/%s", field, raw, val, cancer, site))
-    }
+    m    <- map[[field]]
+    cols <- c(cols, m$col)
+    vals <- c(vals, as.character(transform_value(raw, m$type)))
   }
 
   # mets_<other 3 sites>
@@ -287,20 +282,21 @@ predict_sites_one <- function(cancer, site, inp) {
     if (is.null(raw)) stop(sprintf("Missing required field: %s", col))
     val <- as.character(raw)
     if (!val %in% c("Yes","No")) stop(sprintf("%s must be 'Yes' or 'No', got '%s'", col, raw))
-    filtered <- filtered[filtered[[col]] == val, , drop = FALSE]
+    cols <- c(cols, col); vals <- c(vals, val)
   }
 
-  # mets_other (CSV column is "mate_other" — typo carried from model)
+  # mets_other (DB column is "mate_other" — typo carried from model)
   raw <- inp$mets_other
   if (is.null(raw)) stop("Missing required field: mets_other")
   val <- as.character(raw)
   if (!val %in% c("Yes","No")) stop(sprintf("mets_other must be 'Yes' or 'No', got '%s'", raw))
-  filtered <- filtered[filtered$mate_other == val, , drop = FALSE]
+  cols <- c(cols, "mate_other"); vals <- c(vals, val)
 
-  if (nrow(filtered) != 1) {
-    stop(sprintf("Internal: expected 1 row for %s/%s, got %d", cancer, site, nrow(filtered)))
+  row <- db_lookup(tbl, cols, vals, select = "p_mets")
+  if (nrow(row) != 1) {
+    stop(sprintf("Internal: expected 1 row for %s/%s, got %d", cancer, site, nrow(row)))
   }
-  filtered$p_mets[1]
+  as.numeric(row$p_mets[1])
 }
 
 #* @apiTitle Cancer Metastasis Prediction API (lookup-table backed)
@@ -315,8 +311,8 @@ function() list(
   status = "healthy",
   timestamp = Sys.time(),
   available_cancer_types = length(CANCER_TYPES),
-  loaded_aim1_tables = length(ls(LOOKUPS)),
-  loaded_aim2_tables = length(ls(AIM2_LOOKUPS))
+  loaded_aim1_tables = sum(startsWith(DB_TABLES, "aim1_")),
+  loaded_aim2_tables = sum(startsWith(DB_TABLES, "aim2_"))
 )
 
 #* @get /inputs/<cancer_type>
@@ -349,7 +345,10 @@ function(cancer_type) {
     testis = list(afp_status="AFP status (Within normal limits, Elevated)",
                   hcg_status="HCG status (Within normal limits, Elevated)",
                   ldh_status="LDH status (Within normal limits, Elevated)"),
-    LNSC = , LSC = list(sex="Sex (male, female)"),
+    thyroid = list(sex="Sex (male, female)",
+                   focality="Tumor focality (Solitary, Multifocal, Other/Unknown)"),
+    uterine = , cervix = list(),
+    pancreas = , stomach = , LNSC = , LSC = list(sex="Sex (male, female)"),
     list(sex="Sex (male, female)")
   )
   c(base_inputs, extra)
@@ -428,6 +427,8 @@ function(cancer_type) {
     prostate = list(age=65, tnm_n="N0", tnm_t="T2", psa=7.5, core_ratio=0.4, gleason="Grade group 2"),
     colon    = list(age=60, sex="male", tnm_n="N1", tnm_t="T3", cea=4.5),
     kidney   = list(age=56, sex="male", tnm_n="N0", tnm_t="T1", surgical_factors="Yes", fuhrman_grade="2"),
+    thyroid  = list(age=50, sex="female", tnm_n="N0", tnm_t="T2", focality="Solitary"),
+    uterine  = , cervix = list(age=55, tnm_n="N1", tnm_t="T2"),
     LNSC     = list(age=65, sex="male", tnm_n="N1", tnm_t="T2"),
     list(age=60, sex="male", tnm_n="N1", tnm_t="T2")
   )

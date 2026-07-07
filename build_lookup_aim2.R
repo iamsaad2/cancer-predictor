@@ -26,7 +26,8 @@ CORES_BUCKETS <- c(0.1, 0.3, 0.5, 0.7, 0.9)
 CEA_BUCKETS   <- c(1, 3.75, 7.5, 15, 35, 100)
 
 CANCERS <- c("breast","prostate","colon","rectum","urine","esophagu",
-             "melanoma","liver","kidney","ovary","retroper","testis","lnsc","lsc")
+             "melanoma","liver","kidney","ovary","retroper","testis","lnsc","lsc",
+             "uterine","thyroid","pancreas","stomach","cervix")
 SITES   <- c("bone","brain","liver","lung")
 
 # File naming: most cancers are "<cancer>_<site>.RData"; prostate is "prostate_decision_<site>.RData".
@@ -58,7 +59,13 @@ AIM1_SPECS <- list(
   testis   = list(AGE="age", TNM_N_cat="cat", TNM_T_cat="cat",
                   testis_afp_cat="cat", testis_hcg_cat="cat", testis_ldh_cat="cat"),
   lnsc     = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
-  lsc      = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat")
+  lsc      = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  # New 5 cancers. Note: Aim 2 thyroid does NOT use thyroid_cat (Aim 1 only).
+  uterine  = list(AGE="age", TNM_N_cat="cat", TNM_T_cat="cat"),
+  thyroid  = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  pancreas = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  stomach  = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  cervix   = list(AGE="age", TNM_N_cat="cat", TNM_T_cat="cat")
 )
 
 NUMERIC_VALUES <- list(

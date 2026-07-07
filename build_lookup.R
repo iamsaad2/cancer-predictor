@@ -42,7 +42,12 @@ SPECS <- list(
   testis   = list(AGE="age", TNM_N_cat="cat", TNM_T_cat="cat",
                   testis_afp_cat="cat", testis_hcg_cat="cat", testis_ldh_cat="cat"),
   LNSC     = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
-  LSC      = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat")
+  LSC      = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  uterine  = list(AGE="age", TNM_N_cat="cat", TNM_T_cat="cat"),
+  thyroid  = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat", thyroid_cat="cat"),
+  pancreas = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  stomach  = list(AGE="age", SEX="cat", TNM_N_cat="cat", TNM_T_cat="cat"),
+  cervix   = list(AGE="age", TNM_N_cat="cat", TNM_T_cat="cat")
 )
 
 build_grid <- function(model, cancer) {
@@ -85,8 +90,10 @@ run_one <- function(cancer) {
                metastasis    = round(pred$Yes, 4),
                risk_level    = ifelse(pred$Yes > 0.5, "HIGH", "LOW"))
 
-  out_file <- file.path(out_dir, paste0(cancer, "_lookup.csv"))
-  write.csv(out, out_file, row.names = FALSE)
+  out_file <- file.path(out_dir, paste0(cancer, "_lookup.csv.gz"))
+  gz <- gzfile(out_file, "w")
+  write.csv(out, gz, row.names = FALSE)
+  close(gz)
   sz_mb <- file.info(out_file)$size / 1024 / 1024
   cat(sprintf("[%s] wrote %s (%.2f MB, %d rows)\n", cancer, out_file, sz_mb, nrow(out)))
 
@@ -96,7 +103,8 @@ run_one <- function(cancer) {
 
 ALL_CANCERS <- c(
   "urine","esophagu","melanoma","ovary","retroper","testis","LNSC","LSC",
-  "rectum","colon","liver","kidney","breast","prostate"
+  "rectum","colon","liver","kidney","breast","prostate",
+  "uterine","thyroid","pancreas","stomach","cervix"
 )
 
 if (target == "all") {
